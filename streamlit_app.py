@@ -2,6 +2,7 @@
 dashboard.py
 Streamlit dashboard with conversational interface and insights display
 FIXED: Message duplication and tab switching issues
+UPDATED: User messages now display instantly before agent response
 """
 
 import streamlit as st
@@ -90,25 +91,6 @@ def invalidate_messages_cache(session_id: str):
     if session_id in st.session_state.messages_cache:
         del st.session_state.messages_cache[session_id]
 
-
-def update_url_params():
-    """Update URL parameters to persist state"""
-    if st.session_state.current_session_id:
-        # Backward compatible query params
-        if hasattr(st, 'query_params'):
-            # New API (Streamlit >= 1.30)
-            st.query_params.update({
-                "session_id": st.session_state.current_session_id
-            })
-        else:
-            # Old API (Streamlit < 1.30)
-            st.experimental_set_query_params(session_id=st.session_state.current_session_id)
-    else:
-        # Clear query params
-        if hasattr(st, 'query_params'):
-            st.query_params.clear()
-        else:
-            st.experimental_set_query_params()
 
 def update_url_params():
     """Update URL parameters to persist state"""
@@ -428,8 +410,7 @@ def render_chat_tab():
                     st.rerun()
     
     else:
-        # FIX #1: Only load from cache, don't display pending message here
-        # This prevents duplication
+        # Load conversation history from cache
         history = load_conversation_messages(st.session_state.current_session_id)
         
         chat_container = st.container()
@@ -463,6 +444,19 @@ def render_chat_tab():
                                     height=500,
                                     scrolling=True
                                 )
+            
+            # CHANGE: Display pending user message immediately if it exists
+            if st.session_state.pending_user_message:
+                st.markdown(f"""
+                <div class='chat-message-user'>
+                    <strong>👤 You</strong><br>
+                    {st.session_state.pending_user_message}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Show thinking indicator
+                with st.spinner("🤔 Thinking..."):
+                    st.empty()  # Placeholder for thinking animation
 
 def render_data_explorer_tab():
     """Render the data explorer tab"""
@@ -570,49 +564,48 @@ def main():
     with tab_explorer:
         render_data_explorer_tab()
     
-    # FIX #1: Process pending message OUTSIDE of render_chat_tab
+    # Process pending message OUTSIDE of render_chat_tab
     # This ensures it only runs once per rerun
     if st.session_state.pending_user_message and st.session_state.pending_user_message.strip():
-        # Show thinking indicator
-        with st.spinner("🤔 Thinking..."):
-            # If no session exists, create one with chat()
-            if not st.session_state.current_session_id:
-                result = st.session_state.agent.chat(st.session_state.pending_user_message)
-                session_id = result['session_id']
-                
-                # Cache the initial exchange
-                st.session_state.messages_cache[session_id] = [
-                    {'role': 'human', 'content': st.session_state.pending_user_message},
-                    {'role': 'ai', 'content': result['response'], 'visualizations': result.get('visualizations')}
-                ]
-                
-                # Switch to the new conversation
-                switch_to_conversation(session_id)
-            else:
-                # Continue existing conversation
-                result = st.session_state.agent.continue_conversation(
-                    st.session_state.current_session_id,
-                    st.session_state.pending_user_message
-                )
-                
-                # Update cache
-                if st.session_state.current_session_id not in st.session_state.messages_cache:
-                    st.session_state.messages_cache[st.session_state.current_session_id] = []
-                
-                st.session_state.messages_cache[st.session_state.current_session_id].extend([
-                    {'role': 'human', 'content': st.session_state.pending_user_message},
-                    {'role': 'ai', 'content': result['response'], 'visualizations': result.get('visualizations')}
-                ])
+        # CHANGE: Don't show spinner here anymore - it's shown in render_chat_tab
+        # If no session exists, create one with chat()
+        if not st.session_state.current_session_id:
+            result = st.session_state.agent.chat(st.session_state.pending_user_message)
+            session_id = result['session_id']
             
-            # Clear pending message
-            st.session_state.pending_user_message = None
-            st.rerun()
+            # Cache the initial exchange
+            st.session_state.messages_cache[session_id] = [
+                {'role': 'human', 'content': st.session_state.pending_user_message},
+                {'role': 'ai', 'content': result['response'], 'visualizations': result.get('visualizations')}
+            ]
+            
+            # Switch to the new conversation
+            switch_to_conversation(session_id)
+        else:
+            # Continue existing conversation
+            result = st.session_state.agent.continue_conversation(
+                st.session_state.current_session_id,
+                st.session_state.pending_user_message
+            )
+            
+            # Update cache
+            if st.session_state.current_session_id not in st.session_state.messages_cache:
+                st.session_state.messages_cache[st.session_state.current_session_id] = []
+            
+            st.session_state.messages_cache[st.session_state.current_session_id].extend([
+                {'role': 'human', 'content': st.session_state.pending_user_message},
+                {'role': 'ai', 'content': result['response'], 'visualizations': result.get('visualizations')}
+            ])
+        
+        # Clear pending message
+        st.session_state.pending_user_message = None
+        st.rerun()
     
     # Chat input at root level (always visible)
     user_input = st.chat_input("Ask a question about your email data...")
     
     if user_input and user_input.strip():
-        # FIX #1: Only set pending message if it's not already set
+        # Only set pending message if it's not already set
         # This prevents processing the same message twice
         if not st.session_state.pending_user_message:
             st.session_state.pending_user_message = user_input
